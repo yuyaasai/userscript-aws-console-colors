@@ -1,51 +1,103 @@
-// ==UserScript==
-// @name         AWS Console Colored Menu Bar
-// @namespace    io.manicminer
-// @version      0.2.4
-// @description  Extend AWS Console role switcher color to entire menu bar
-// @author       Tom Bamford
-// @icon         https://user-images.githubusercontent.com/251987/40598271-067fbe3c-6247-11e8-89c2-2e0a4d2a1464.png
-// @license      MIT
-// @match        https://console.aws.amazon.com/*
-// @match        https://*.console.aws.amazon.com/*
-// @grant        none
-// ==/UserScript==
+const getNavElements = (document: Document) => {
+    const consoleNavHeader = document.getElementById("consoleNavHeader")
+    if (consoleNavHeader == null) {
+        return { error: new Error("#consoleNavHeader not found") }
+    }
 
-(function() {
-    'use strict';
+    const container = consoleNavHeader?.querySelector("#awsc-navigation-container")
+    if (container == null) {
+        return { error: new Error("#awsc-navigation-container not found") }
+    }
 
-    // Change values of s and l to adjust the saturation and luminosity of the background color
-    var s = 1.0, l = 0.25;
+    const switcher = container.querySelector("[data-testid='account-menu-button__background']") as HTMLElement
+    if (switcher == null) {
+        return { error: new Error("switcher element not found") }
+    }
 
-    function determineNewColor(rgbColor) {
-        var f = rgbColor.split(","), r = parseInt(f[0].slice(4)), g = parseInt(f[1]), b = parseInt(f[2]);
-        r /= 255; g /= 255; b /= 255;
-        var h, max = Math.max(r, g, b), min = Math.min(r, g, b);
-        if (max == min) {
-            h = s = 0; // achromatic
-        } else {
-            var d = max - min;
-            switch (max) {
-                case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-                case g: h = (b - r) / d + 2; break;
-                case b: h = (r - g) / d + 4; break;
+    return { consoleNavHeader, container, switcher }
+}
+
+// eslint-disable-next-line
+const getNavElementsAsync = (document: Document, maxRetryTimes: number, retryIntervalInMilliseconds: number) =>
+    new Promise<{ consoleNavHeader: Element, container: Element, switcher: HTMLElement }>((resolve, reject) => {
+        const fn = (retryCount: number) => {
+            const { container, switcher, consoleNavHeader, error } = getNavElements(document)
+            if (error != null) {
+                if (retryCount >= maxRetryTimes) {
+                    reject(error)
+                }
+                setTimeout(() => fn(retryCount + 1), retryIntervalInMilliseconds)
+                return
             }
-            h /= 6;
-        }
-        return 'hsl(' + Math.floor(h * 360) + ',' + Math.floor(s * 100) + '%,' + Math.floor(l * 100) + '%)';
-    }
 
-    var switcherClass = 'awsc-switched-role-username-wrapper';
-    var roleElems = document.getElementsByClassName(switcherClass);
-    if (roleElems.length == 1) {
-        var bgColor = roleElems[0].style.backgroundColor;
-        var newBgColor = determineNewColor(bgColor);
-        var navSelector = '#nav-menubar, #nav-menu-right, .nav-menu, .nav-menu-separator';
-        var menuBarElems = document.querySelectorAll(navSelector);
-        for (var i = 0; i < menuBarElems.length; i++) {
-            menuBarElems[i].style.backgroundColor = newBgColor;
+            resolve({ container, switcher, consoleNavHeader })
         }
-    }
-})();
+        fn(0)
+    })
 
-/* vim: set ft=javascript ts=4 sts=4 sw=4 et: */
+const determineNewColor = (rgbColor: string, saturation = 1.0, luminosity = 0.25) => {
+    const f = rgbColor.split(",")
+    const r = parseInt(f[0].slice(4)) / 255
+    const g = parseInt(f[1]) / 255
+    const b = parseInt(f[2]) / 255
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    let h
+    if (max === min) {
+        h = saturation = 0 // achromatic
+    } else {
+        const d = max - min
+        switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break
+            case g: h = (b - r) / d + 2; break
+            case b: h = (r - g) / d + 4; break
+            default: throw new Error()
+        }
+        h /= 6
+    }
+    return `hsl(${Math.floor(h * 360)},${Math.floor(saturation * 100)}%,${Math.floor(luminosity * 100)}%)`
+}
+
+// eslint-disable-next-line
+const setNavColorAsync = (document: Document, roleSettings: Array<{pattern:RegExp, color?:string}>) => new Promise<{ contentBgColor: string }>((resolve, reject) => {
+    getNavElementsAsync(document, 300, 100).then(result => {
+        const { container, switcher, consoleNavHeader } = result
+
+        const observer = new MutationObserver((__, observer) => {
+            observer.disconnect()
+            const role = switcher.parentElement?.innerText?.trim()
+            const bgColor = switcher.style.backgroundColor
+
+            const roleSetting = roleSettings.find(x => x.pattern.test(role ?? ""));
+            let newBgColor: string
+            let contentBgColor: string
+            if (role != null && roleSetting?.pattern.test(role)) {
+                newBgColor = roleSetting.color ?? ""
+                contentBgColor = roleSetting.color ?? ""
+            } else {
+                newBgColor = determineNewColor(bgColor)
+                contentBgColor = determineNewColor(bgColor, 0.95, 0.90)
+            }
+
+            console.log("AWS-NAV-COLORING", { container, switcher, role, bgColor, newBgColor, contentBgColor })
+
+            if (newBgColor != "") {
+                const navs = container.querySelectorAll("nav")
+                for (let i = 0, l = navs.length; i < l; i++) {
+                    navs[i].style.backgroundColor = newBgColor
+                }    
+            }
+
+            resolve({ contentBgColor })    
+        })
+
+        observer.observe(consoleNavHeader, { childList: true })
+    }).catch(reject)
+})
+
+export {
+    getNavElements,
+    getNavElementsAsync,
+    determineNewColor,
+    setNavColorAsync
+}
